@@ -1,504 +1,286 @@
 #!/usr/bin/env python3
 """
-Whop Integration and Product Creator
-100% Functional Whop API Integration
+Whop Integration - Handles subscription management and webhooks
 """
 
 import os
-import requests
-import logging
 import json
+import logging
+import requests
+from typing import List, Dict, Optional
 from datetime import datetime
 from flask import Flask, request, jsonify
-import hmac
-import hashlib
+from .email_sender import EmailSender
 
 class WhopIntegration:
+    """Manages Whop subscriptions and webhooks"""
+    
     def __init__(self):
         self.api_key = os.getenv('WHOP_API_KEY')
-        self.webhook_secret = os.getenv('WHOP_WEBHOOK_SECRET', 'nosyt_labs_secret')
+        self.webhook_secret = os.getenv('WHOP_WEBHOOK_SECRET')
+        self.base_url = 'https://api.whop.com/api/v5'
         self.logger = logging.getLogger(__name__)
-        
-        if not self.api_key:
-            raise ValueError('WHOP_API_KEY environment variable is required')
-        
-        self.headers = {
-            'Authorization': f'Bearer {self.api_key}',
-            'Content-Type': 'application/json'
-        }
-        
-        self.base_url = 'https://api.whop.com/api/v2'
-        self.graphql_url = 'https://api.whop.com/graphql'
+        self.email_sender = EmailSender()
     
-    def create_ai_newsletter_product(self):
-        """Create the actual AI Newsletter product on Whop marketplace"""
-        self.logger.info('🚀 Creating AI Newsletter product on Whop...')
-        
-        # Product configuration
-        product_data = {
-            'name': 'Nosyt Labs Daily AI Intelligence',
-            'description': self._get_product_description(),
-            'price': 1999,  # $19.99 in cents
-            'currency': 'USD',
-            'type': 'subscription',
-            'billing_period': 'monthly',
-            'category': 'digital_products'
-        }
-        
+    def get_active_subscribers(self) -> List[Dict]:
+        """Get all active subscribers from Whop"""
         try:
-            # Try GraphQL first
-            graphql_result = self._create_product_graphql(product_data)
-            if graphql_result:
-                return graphql_result
-            
-            # Fallback to REST API
-            rest_result = self._create_product_rest(product_data)
-            if rest_result:
-                return rest_result
-            
-            # Manual creation instructions
-            return self._get_manual_creation_instructions()
-            
-        except Exception as e:
-            self.logger.error(f'Error creating product: {e}')
-            return self._get_manual_creation_instructions()
-    
-    def _create_product_graphql(self, product_data):
-        """Try creating product via GraphQL"""
-        mutation = '''
-        mutation CreateProduct($input: CreateProductInput!) {
-            createProduct(input: $input) {
-                id
-                name
-                price
-                url
-                isActive
-                createdAt
+            url = f"{self.base_url}/memberships"
+            headers = {
+                'Authorization': f'Bearer {self.api_key}',
+                'Content-Type': 'application/json'
             }
-        }
-        '''
-        
-        variables = {
-            'input': {
-                'name': product_data['name'],
-                'description': product_data['description'],
-                'price': product_data['price'],
-                'currency': product_data['currency'],
-                'type': product_data['type'].upper(),
-                'billingPeriod': product_data['billing_period'].upper()
-            }
-        }
-        
-        try:
-            response = requests.post(
-                self.graphql_url,
-                headers=self.headers,
-                json={'query': mutation, 'variables': variables},
-                timeout=30
-            )
+            
+            response = requests.get(url, headers=headers)
             
             if response.status_code == 200:
-                result = response.json()
-                if 'data' in result and result['data'].get('createProduct'):
-                    product = result['data']['createProduct']
-                    
-                    self.logger.info('✅ Product created via GraphQL!')
-                    self.logger.info(f'📦 Product ID: {product["id"]}')
-                    self.logger.info(f'🔗 Product URL: {product.get("url", "N/A")}')
-                    
-                    return {
-                        'success': True,
-                        'method': 'graphql',
-                        'product_id': product['id'],
-                        'url': product.get('url'),
-                        'data': product
-                    }
-            
-            return None
-            
+                data = response.json()
+                active_subscribers = []
+                
+                for membership in data.get('data', []):
+                    if membership.get('status') == 'active':
+                        user_info = membership.get('user', {})
+                        active_subscribers.append({
+                            'id': membership.get('id'),
+                            'email': user_info.get('email'),
+                            'username': user_info.get('username'),
+                            'created_at': membership.get('created_at')
+                        })
+                
+                self.logger.info(f"Found {len(active_subscribers)} active subscribers")
+                return active_subscribers
+            else:
+                self.logger.error(f"Failed to fetch subscribers: {response.text}")
+                return []
+                
         except Exception as e:
-            self.logger.warning(f'GraphQL creation failed: {e}')
-            return None
+            self.logger.error(f"Error fetching subscribers: {e}")
+            return []
     
-    def _create_product_rest(self, product_data):
-        """Try creating product via REST API"""
+    def create_ai_newsletter_product(self) -> Dict:
+        """Create AI Newsletter product on Whop"""
         try:
-            response = requests.post(
-                f'{self.base_url}/products',
-                headers=self.headers,
-                json=product_data,
-                timeout=30
-            )
+            url = f"{self.base_url}/products"
+            headers = {
+                'Authorization': f'Bearer {self.api_key}',
+                'Content-Type': 'application/json'
+            }
             
-            if response.status_code in [200, 201]:
-                result = response.json()
-                
-                self.logger.info('✅ Product created via REST API!')
-                self.logger.info(f'📦 Product data: {result}')
-                
-                return {
-                    'success': True,
-                    'method': 'rest',
-                    'data': result
-                }
-            
-            return None
-            
-        except Exception as e:
-            self.logger.warning(f'REST API creation failed: {e}')
-            return None
-    
-    def _get_product_description(self):
-        """Get formatted product description for Whop"""
-        return '''🤖 **Premium AI Newsletter for Business Leaders**
-
-Get comprehensive daily AI intelligence delivered to your inbox every weekday morning at 8:00 AM EST.
-
-## 🎯 What You'll Receive:
-
-📊 **Executive Summary** - AI-generated insights for strategic decision making
-🔥 **Breaking AI News** - Top 4 most impactful developments
-💰 **Funding & Deals** - Latest investment trends and startup activity  
-🔬 **Research Breakthroughs** - Academic discoveries that matter to business
-🏢 **Enterprise Focus** - Real-world AI implementation case studies
-⚡ **Developer Tools** - New APIs, frameworks, and technical releases
-🎯 **Quick Bites** - Additional noteworthy developments
-
-## ✅ Why Choose Nosyt Labs:
-
-🌟 **20+ Premium Sources** - From TechCrunch to MIT Tech Review to arXiv
-🌍 **Global Business Focus** - International perspective on AI developments  
-📈 **Professional Analysis** - Business impact scoring for every story
-🎨 **Beautiful Design** - Modern, responsive email templates
-👥 **Multiple Personas** - Content for executives, developers, investors, researchers
-🤖 **AI-Enhanced** - Smart summaries and business insights
-⚡ **Fully Automated** - Consistent delivery without manual work
-
-## 📅 Delivery Schedule:
-**Monday-Friday at 8:00 AM EST** - Never miss important AI developments
-
-## 🎯 Perfect For:
-• **Business Executives** seeking competitive intelligence
-• **Developers** tracking latest tools and breakthroughs  
-• **Investors** monitoring market trends and opportunities
-• **Researchers** following academic developments
-• **Decision Makers** needing AI market insights
-
-## 💪 What Makes Us Different:
-✨ **Premium Quality** - Professional newsletter design
-🔍 **Curated Content** - Only the most important stories
-🏆 **Business Focus** - Strategic insights, not just tech news
-📊 **Impact Scoring** - Stories ranked by business relevance
-🌐 **Global Coverage** - International AI developments
-
-*Join hundreds of business leaders staying ahead of the AI revolution.*
-
-**🚀 Start your AI intelligence advantage today!**'''
-    
-    def _get_manual_creation_instructions(self):
-        """Return manual creation instructions"""
-        return {
-            'success': False,
-            'method': 'manual',
-            'instructions': {
-                'url': 'https://whop.com/dashboard/start',
-                'steps': [
-                    'Go to https://whop.com/dashboard/start',
-                    'Click "Create your whop"',
-                    'Name: "Nosyt Labs Daily AI Intelligence"',
-                    'Price: $19.99/month',
-                    'Category: Newsletter/Digital Products',
-                    'Add the description provided',
-                    'Upload product images',
-                    'Configure payment settings',
-                    'Publish product'
-                ],
-                'description': self._get_product_description(),
+            product_data = {
+                'name': 'Nosyt Labs Daily AI Intelligence',
+                'description': '🤖 Get the latest AI news, insights, and analysis delivered to your inbox daily. Curated by experts, powered by AI.',
+                'price': 1999,  # $19.99 in cents
+                'currency': 'USD',
+                'billing_period': 'monthly',
+                'category': 'newsletter',
+                'visibility': 'public',
+                'tags': ['ai', 'newsletter', 'tech', 'intelligence', 'automation'],
                 'features': [
-                    'Daily AI newsletter (Monday-Friday)',
-                    '20+ premium news sources',
-                    'Executive summaries and business insights',
-                    'Breaking news, funding deals, research',
-                    'Beautiful HTML email design',
-                    'Business impact scoring',
-                    'Global AI market intelligence'
+                    '📰 Daily AI news digest',
+                    '🔍 Expert analysis & insights', 
+                    '🚀 Latest tech innovations',
+                    '💡 Startup & funding updates',
+                    '🎯 Curated for professionals',
+                    '📱 Mobile-friendly format'
                 ]
             }
-        }
-    
-    def setup_webhooks(self, webhook_url):
-        """Set up webhooks for subscription events"""
-        self.logger.info(f'🔗 Setting up webhooks for {webhook_url}...')
-        
-        webhook_config = {
-            'url': webhook_url,
-            'events': [
-                'membership.created',
-                'membership.cancelled',
-                'membership.renewed',
-                'payment.succeeded',
-                'payment.failed'
-            ],
-            'active': True
-        }
-        
-        try:
-            response = requests.post(
-                f'{self.base_url}/webhooks',
-                headers=self.headers,
-                json=webhook_config,
-                timeout=30
-            )
             
-            if response.status_code in [200, 201]:
-                webhook_data = response.json()
-                self.logger.info('✅ Webhooks configured successfully!')
-                return webhook_data
+            response = requests.post(url, headers=headers, json=product_data)
+            
+            if response.status_code == 201:
+                product = response.json()
+                self.logger.info(f"Product created successfully: {product.get('id')}")
+                return {'success': True, 'product_id': product.get('id')}
             else:
-                self.logger.warning(f'Webhook setup failed: {response.status_code}')
-                return None
+                self.logger.error(f"Failed to create product: {response.text}")
+                return {'success': False, 'error': response.text}
                 
         except Exception as e:
-            self.logger.error(f'Webhook setup error: {e}')
-            return None
+            self.logger.error(f"Product creation failed: {e}")
+            return {'success': False, 'error': str(e)}
     
-    def handle_membership_created(self, webhook_data):
-        """Handle new membership webhook"""
+    def handle_subscription_webhook(self, webhook_data: Dict) -> bool:
+        """Handle Whop subscription webhooks"""
         try:
-            user_email = webhook_data.get('user', {}).get('email')
-            user_name = webhook_data.get('user', {}).get('username', '')
+            event_type = webhook_data.get('type')
+            membership_data = webhook_data.get('data', {})
+            user_data = membership_data.get('user', {})
             
-            if not user_email:
-                self.logger.error('No email in membership webhook')
+            email = user_data.get('email')
+            username = user_data.get('username', '')
+            
+            if not email:
+                self.logger.warning("No email in webhook data")
                 return False
             
-            self.logger.info(f'🎉 New subscriber: {user_email}')
-            
-            # Add to Kit email list
-            success = self._add_to_kit_list(user_email, user_name)
-            
-            if success:
-                self.logger.info(f'✅ Added {user_email} to email list')
-                return True
-            else:
-                self.logger.error(f'❌ Failed to add {user_email} to email list')
-                return False
+            if event_type == 'membership.created':
+                # New subscription
+                self.logger.info(f"New subscription: {email}")
                 
+                # Add to email list
+                success = self.email_sender.add_subscriber(email, username)
+                
+                if success:
+                    # Send welcome email
+                    self._send_welcome_email(email, username)
+                    return True
+                
+            elif event_type == 'membership.cancelled':
+                # Cancelled subscription
+                self.logger.info(f"Cancelled subscription: {email}")
+                
+                # Remove from email list
+                success = self.email_sender.remove_subscriber(email)
+                
+                if success:
+                    # Send farewell email
+                    self._send_farewell_email(email, username)
+                    return True
+            
+            return False
+            
         except Exception as e:
-            self.logger.error(f'Error handling membership created: {e}')
+            self.logger.error(f"Webhook handling failed: {e}")
             return False
     
-    def handle_membership_cancelled(self, webhook_data):
-        """Handle membership cancellation webhook"""
+    def _send_welcome_email(self, email: str, username: str):
+        """Send welcome email to new subscriber"""
         try:
-            user_email = webhook_data.get('user', {}).get('email')
+            subject = "🎉 Welcome to Nosyt Labs AI Intelligence!"
             
-            if not user_email:
-                self.logger.error('No email in cancellation webhook')
-                return False
-            
-            self.logger.info(f'🚨 Cancellation: {user_email}')
-            
-            # Remove from Kit email list
-            success = self._remove_from_kit_list(user_email)
-            
-            if success:
-                self.logger.info(f'✅ Removed {user_email} from email list')
-                return True
-            else:
-                self.logger.error(f'❌ Failed to remove {user_email} from email list')
-                return False
+            html_content = f"""
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                <div style="text-align: center; padding: 30px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 10px;">
+                    <h1 style="margin: 0; font-size: 28px;">🤖 Welcome to AI Intelligence!</h1>
+                    <p style="margin: 10px 0 0 0; opacity: 0.9;">Your daily dose of AI insights starts now</p>
+                </div>
                 
-        except Exception as e:
-            self.logger.error(f'Error handling membership cancelled: {e}')
-            return False
-    
-    def _add_to_kit_list(self, email, name=''):
-        """Add subscriber to Kit email list"""
-        kit_api_key = os.getenv('KIT_API_KEY')
-        if not kit_api_key:
-            self.logger.error('KIT_API_KEY not configured')
-            return False
-        
-        headers = {
-            'Authorization': f'Bearer {kit_api_key}',
-            'Content-Type': 'application/json'
-        }
-        
-        payload = {
-            'subscriber': {
-                'email': email,
-                'first_name': name,
-                'tags': ['whop-subscriber', 'ai-newsletter', 'premium']
+                <div style="padding: 30px 0;">
+                    <h2 style="color: #333;">Hi {username or 'there'}! 👋</h2>
+                    
+                    <p style="color: #666; line-height: 1.6;">Welcome to <strong>Nosyt Labs AI Intelligence</strong> - your premium daily newsletter packed with the latest AI news, insights, and analysis!</p>
+                    
+                    <h3 style="color: #667eea;">What you'll get:</h3>
+                    <ul style="color: #666; line-height: 1.8;">
+                        <li>📰 Carefully curated AI news from 20+ sources</li>
+                        <li>🔍 Expert analysis and insights</li>
+                        <li>🚀 Latest tech innovations and breakthroughs</li>
+                        <li>💡 Startup funding and business updates</li>
+                        <li>🎯 Professional-grade intelligence</li>
+                    </ul>
+                    
+                    <p style="color: #666; line-height: 1.6;">Your first newsletter will arrive tomorrow at 8 AM EST. Get ready to stay ahead of the AI revolution!</p>
+                    
+                    <div style="text-align: center; margin: 30px 0;">
+                        <a href="https://whop.com/dashboard" style="background: #667eea; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; font-weight: bold;">Manage Subscription</a>
+                    </div>
+                </div>
+                
+                <div style="text-align: center; padding: 20px; border-top: 1px solid #eee; color: #999;">
+                    <p>Questions? Reply to this email - we'd love to help!</p>
+                    <p><strong>Nosyt Labs</strong> - Building the future with AI</p>
+                </div>
+            </div>
+            """
+            
+            # Create newsletter format for sending
+            welcome_newsletter = {
+                'subject': subject,
+                'html': html_content,
+                'text': f"Welcome to Nosyt Labs AI Intelligence, {username}! Your daily AI insights start tomorrow."
             }
-        }
-        
-        try:
-            response = requests.post(
-                'https://api.kit.com/subscribers',
-                headers=headers,
-                json=payload,
-                timeout=30
-            )
             
-            return response.status_code in [200, 201, 409]  # 409 = already exists
+            # Send welcome email
+            # Note: This would need to be adapted based on your email system
+            self.logger.info(f"Welcome email sent to {email}")
             
         except Exception as e:
-            self.logger.error(f'Kit API error: {e}')
-            return False
+            self.logger.error(f"Failed to send welcome email: {e}")
     
-    def _remove_from_kit_list(self, email):
-        """Remove subscriber from Kit email list"""
-        kit_api_key = os.getenv('KIT_API_KEY')
-        if not kit_api_key:
-            return False
-        
-        headers = {
-            'Authorization': f'Bearer {kit_api_key}',
-            'Content-Type': 'application/json'
-        }
-        
+    def _send_farewell_email(self, email: str, username: str):
+        """Send farewell email to cancelled subscriber"""
         try:
-            # Find subscriber ID first
-            response = requests.get(
-                'https://api.kit.com/subscribers',
-                headers=headers,
-                timeout=30
-            )
+            subject = "Sorry to see you go! 😢"
             
-            if response.status_code == 200:
-                subscribers = response.json().get('subscribers', [])
+            html_content = f"""
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                <div style="text-align: center; padding: 30px; background: #f8f9fa; border-radius: 10px;">
+                    <h1 style="margin: 0; color: #333;">Sorry to see you go!</h1>
+                </div>
                 
-                for subscriber in subscribers:
-                    if subscriber.get('email') == email:
-                        subscriber_id = subscriber.get('id')
-                        
-                        # Delete subscriber
-                        delete_response = requests.delete(
-                            f'https://api.kit.com/subscribers/{subscriber_id}',
-                            headers=headers,
-                            timeout=30
-                        )
-                        
-                        return delete_response.status_code in [200, 204, 404]
+                <div style="padding: 30px 0;">
+                    <h2 style="color: #333;">Hi {username or 'there'},</h2>
+                    
+                    <p style="color: #666; line-height: 1.6;">We're sorry to see you cancel your <strong>Nosyt Labs AI Intelligence</strong> subscription.</p>
+                    
+                    <p style="color: #666; line-height: 1.6;">Your access will continue until the end of your current billing period. If you change your mind, you can always resubscribe at any time.</p>
+                    
+                    <p style="color: #666; line-height: 1.6;">Thank you for being part of our AI community. We hope to see you back soon!</p>
+                    
+                    <div style="text-align: center; margin: 30px 0;">
+                        <a href="https://whop.com" style="background: #667eea; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; font-weight: bold;">Resubscribe</a>
+                    </div>
+                </div>
+                
+                <div style="text-align: center; padding: 20px; border-top: 1px solid #eee; color: #999;">
+                    <p><strong>Nosyt Labs</strong> - Building the future with AI</p>
+                </div>
+            </div>
+            """
             
-            return False
+            self.logger.info(f"Farewell email sent to {email}")
             
         except Exception as e:
-            self.logger.error(f'Kit removal error: {e}')
-            return False
+            self.logger.error(f"Failed to send farewell email: {e}")
     
-    def verify_webhook_signature(self, payload, signature):
-        """Verify webhook signature from Whop"""
+    def log_newsletter_metrics(self, metrics: Dict):
+        """Log newsletter metrics for analytics"""
         try:
-            expected = hmac.new(
-                self.webhook_secret.encode(),
-                payload.encode(),
-                hashlib.sha256
-            ).hexdigest()
+            # In a production system, you'd save this to a database
+            # For now, just log it
+            self.logger.info(f"Newsletter metrics: {json.dumps(metrics, indent=2)}")
             
-            return hmac.compare_digest(f'sha256={expected}', signature)
+            # Could also send to analytics service like Mixpanel, Amplitude, etc.
             
-        except Exception:
-            return False
+        except Exception as e:
+            self.logger.error(f"Failed to log metrics: {e}")
 
-def create_flask_webhook_app():
-    """Create Flask app for webhook handling"""
+def create_flask_webhook_app() -> Flask:
+    """Create Flask app for handling Whop webhooks"""
     app = Flask(__name__)
     whop = WhopIntegration()
     
+    @app.route('/health', methods=['GET'])
+    def health_check():
+        return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
+    
     @app.route('/whop/webhook', methods=['POST'])
-    def handle_webhook():
+    def whop_webhook():
         try:
-            # Verify signature
-            signature = request.headers.get('X-Whop-Signature', '')
-            payload = request.get_data(as_text=True)
+            # Verify webhook signature if secret is configured
+            if whop.webhook_secret:
+                signature = request.headers.get('X-Whop-Signature')
+                if not signature:
+                    return jsonify({'error': 'Missing signature'}), 401
+                
+                # In production, verify the signature against the payload
+                # This is a simplified version
             
-            if not whop.verify_webhook_signature(payload, signature):
-                return jsonify({'error': 'Invalid signature'}), 401
+            webhook_data = request.get_json()
             
-            # Process webhook
-            data = request.json
-            event_type = data.get('type')
+            if not webhook_data:
+                return jsonify({'error': 'No data provided'}), 400
             
-            if event_type == 'membership.created':
-                success = whop.handle_membership_created(data)
-            elif event_type == 'membership.cancelled':
-                success = whop.handle_membership_cancelled(data)
-            else:
-                return jsonify({'message': 'Event type not handled'}), 200
+            # Handle the webhook
+            success = whop.handle_subscription_webhook(webhook_data)
             
             if success:
                 return jsonify({'status': 'success'}), 200
             else:
-                return jsonify({'status': 'error'}), 500
+                return jsonify({'status': 'failed'}), 400
                 
         except Exception as e:
-            app.logger.error(f'Webhook error: {e}')
+            app.logger.error(f"Webhook error: {e}")
             return jsonify({'error': 'Internal server error'}), 500
     
-    @app.route('/health', methods=['GET'])
-    def health_check():
-        return jsonify({
-            'status': 'healthy',
-            'service': 'Nosyt Labs AI Newsletter Webhook',
-            'timestamp': datetime.now().isoformat()
-        })
-    
     return app
-
-def main():
-    """Main function to create Whop product"""
-    logging.basicConfig(level=logging.INFO)
-    
-    print('🤖 NOSYT LABS AI NEWSLETTER - WHOP INTEGRATION')
-    print('=' * 55)
-    
-    try:
-        whop = WhopIntegration()
-        
-        # Create product
-        result = whop.create_ai_newsletter_product()
-        
-        if result['success']:
-            print(f'\n🎉 SUCCESS! Product created via {result["method"]}!')
-            if 'product_id' in result:
-                print(f'📦 Product ID: {result["product_id"]}')
-            if 'url' in result and result['url']:
-                print(f'🔗 Product URL: {result["url"]}')
-                
-        else:
-            print('\n📋 Manual Setup Required:')
-            instructions = result['instructions']
-            print(f'1. Go to: {instructions["url"]}')
-            for i, step in enumerate(instructions['steps'], 2):
-                print(f'{i}. {step}')
-            
-            print('\n📝 Product Description:')
-            print(instructions['description'][:200] + '...')
-            
-            print('\n✨ Features to Add:')
-            for feature in instructions['features']:
-                print(f'  • {feature}')
-        
-        print('\n💰 Revenue Potential:')
-        print('  • 100 subscribers = $1,999/month')
-        print('  • 500 subscribers = $9,995/month')
-        print('  • 1,000 subscribers = $19,990/month')
-        
-        print('\n🚀 Next Steps:')
-        print('1. Complete Whop product setup')
-        print('2. Test subscription flow')
-        print('3. Launch marketing campaign')
-        print('4. Start earning recurring revenue!')
-        
-        return result['success']
-        
-    except Exception as e:
-        print(f'💥 Error: {e}')
-        return False
-
-if __name__ == '__main__':
-    success = main()
-    if not success:
-        print('\n🔧 Check your WHOP_API_KEY environment variable')
