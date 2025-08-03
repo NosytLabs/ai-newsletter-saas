@@ -1,1 +1,1 @@
-# Nosyt Labs AI Newsletter SaaS
+# AI Newsletter SaaS - Source Package
