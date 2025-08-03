@@ -24,7 +24,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
     
-    - name: Run newsletter generation
+    - name: Run daily newsletter
       env:
         NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -32,13 +32,12 @@ jobs:
         WHOP_API_KEY: ${{ secrets.WHOP_API_KEY }}
         WHOP_WEBHOOK_SECRET: ${{ secrets.WHOP_WEBHOOK_SECRET }}
       run: |
-        cd src
-        python main.py
+        python src/newsletter_system.py
     
     - name: Upload logs
       if: always()
       uses: actions/upload-artifact@v3
       with:
         name: newsletter-logs
-        path: src/newsletter.log
+        path: newsletter.log
         retention-days: 7
